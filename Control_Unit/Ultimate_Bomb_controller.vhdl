@@ -1,0 +1,140 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity Ultimate_Bomb_controller is
+    Port (
+        clk        : in  STD_LOGIC;  
+        Reset      : in  STD_LOGIC;
+        EN         : in  STD_LOGIC;  -- Enter 鍵
+        
+        -- 外部狀態輸入 (代替原本的 8-bit 數字，由外部的 Comparator 產生)
+        Time_Out   : in  STD_LOGIC;  -- 倒數計時為 0 的訊號
+        Pass_Gt    : in  STD_LOGIC;  -- 輸入 > 密碼
+        Pass_Match : in  STD_LOGIC;  -- 輸入 == 密碼
+        Pass_Lt    : in  STD_LOGIC;  -- 輸入 < 密碼
+        
+        -- 給 Level Manager 的介面
+        Win_Flag   : in  STD_LOGIC;  -- 來自 Level Manager：是否達成通關條件
+        
+        -- 對外部 Datapath 的控制輸出
+        Load_Max   : out STD_LOGIC;  -- 叫外部 Max 暫存器更新
+        Load_Min   : out STD_LOGIC;  -- 叫外部 Min 暫存器更新
+        New_Bomb   : out STD_LOGIC;  -- 叫亂數產生器產生新密碼 (兼具 Reset 上下限的功能)
+        add_time   : out STD_LOGIC;  -- 叫計時器加時間
+        WIN        : out STD_LOGIC;
+        LOSE       : out STD_LOGIC;
+        Game_Run   : out STD_LOGIC;  -- 新增：告訴倒數計時器現在可以倒數了
+        State_Out  : out STD_LOGIC_VECTOR(2 downto 0); -- 新增：輸出當前狀態給顯示器
+        
+        -- 給 Level Manager 的介面
+        Next_Level : out STD_LOGIC  -- 給 Level Manager：破關了，進度加一
+    );
+end Ultimate_Bomb_controller;
+
+architecture Behavioral of Ultimate_Bomb_controller is
+    type state_type is (idle, next_bomb, game, check_pass, game_win, game_lose);
+    signal current_state : state_type := idle;
+    
+    signal EN_prev : STD_LOGIC := '0';
+begin
+
+    process(current_state)
+    begin
+        case current_state is
+            when idle       => State_Out <= "000";
+            when next_bomb  => State_Out <= "001";
+            when game       => State_Out <= "010";
+            when check_pass => State_Out <= "010";
+            when game_win   => State_Out <= "011";
+            when game_lose  => State_Out <= "100";
+            when others     => State_Out <= "000";
+        end case;
+    end process;
+
+    process(clk, Reset)
+    begin
+        if Reset = '1' then
+            current_state <= idle;
+            WIN <= '0';
+            LOSE <= '0';
+            Game_Run <= '0';
+            New_Bomb <= '0';
+            add_time <= '0';
+            Load_Max <= '0';
+            Load_Min <= '0';
+            EN_prev <= '0';
+            
+        elsif rising_edge(clk) then
+            -- 預設所有脈衝控制訊號為 0 (避免產生 Latch)
+            New_Bomb <= '0';
+            add_time <= '0';
+            Next_Level <= '0';
+            Load_Max <= '0';
+            Load_Min <= '0';
+            
+            EN_prev <= EN; 
+            
+            -- 時間到直接輸
+            if current_state /= idle and current_state /= game_win and current_state /= game_lose then
+                if Time_Out = '1' then
+                    current_state <= game_lose;
+                end if;
+            end if;
+
+            case current_state is
+                when idle =>
+                    WIN <= '0';
+                    LOSE <= '0';
+                    Game_Run <= '0';
+                    
+                    
+                    if EN = '1' and EN_prev = '0' then
+                        current_state <= next_bomb; 
+                    end if;
+                    
+                when next_bomb =>
+                    New_Bomb <= '1'; -- 此脈衝可以用來把外部的 Max 和 Min 暫存器重置為 99 和 0
+                    Game_Run <= '0';
+                    
+                    if EN = '1' and EN_prev = '0' then
+                        current_state <= game;
+                    end if;
+                    
+                when game =>
+                    if EN = '1' and EN_prev = '0' then
+                        current_state <= check_pass;
+                    end if;
+                    
+                when check_pass =>
+                    if Pass_Gt = '1' then
+                        Load_Max <= '1'; -- 叫外部暫存器鎖定新上限
+                        current_state <= game;
+                    elsif Pass_Lt = '1' then
+                        Load_Min <= '1'; -- 叫外部暫存器鎖定新下限
+                        current_state <= game;
+                    elsif Pass_Match = '1' then
+                        add_time <= '1';
+                        Next_Level <= '1'; -- 觸發 Level Manager 進度加一
+                        
+                        if Win_Flag = '1' then
+                            current_state <= game_win;
+                        else
+                            current_state <= next_bomb;
+                        end if;
+                    else
+                        current_state <= game; -- 防呆
+                    end if;
+                    
+                when game_win =>
+                    WIN <= '1';
+                    Game_Run <= '0';
+                    
+                when game_lose =>
+                    LOSE <= '1';
+                    Game_Run <= '0';
+                    
+            end case;
+        end if;
+    end process;
+end Behavioral;
